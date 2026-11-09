@@ -2,7 +2,7 @@
 
 # CurtainDrop
 
-**Panic-mode privacy lock for Windows. One command. Immediate silence. Immediate blackout. Clean restore.**
+**Panic-mode privacy controls for Windows, with a recorded best-effort recovery workflow.**
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)
@@ -12,18 +12,15 @@
 
 </div>
 
-# CurtainDrop
-**Panic-mode privacy lock for Windows. One command. Immediate silence. Immediate blackout. Clean restore.**
-
 CurtainDrop is a PowerShell 5.1–safe incident-response “curtain drop” script designed to quickly reduce exposure during a suspected compromise or high-risk situation by:
 
 - Muting system audio output (CoreAudio, no external modules)
 - Disabling targeted **camera + microphone** devices (PnP strict-class targeting)
 - Disabling active network adapters (with skip patterns for tunnels/virtual adapters)
 - Optionally freezing **user-owned, session-scoped, non-critical** processes via Sysinternals **PsSuspend**
-- Producing a **forensic-grade local HTML report** and a `state.json` snapshot so Restore is deterministic
+- Producing a local operational HTML report and a `state.json` record used for best-effort recovery
 
-This repository is intentionally simple: a single script plus PsSuspend.
+This repository contains a single PowerShell script. Microsoft Sysinternals PsSuspend is an optional external utility and is not included in the repository.
 
 ---
 
@@ -53,11 +50,38 @@ Restores only what was changed in the associated `state.json`, in order:
 5) Verification (optional, non-DryRun)  
 6) Regenerate and open the report  
 
+**Recovery limitations verified from the source (not live-hardware tested):**
+
+- `state.json` is written near the **end of Panic**, after device/network changes and optional suspension. An interruption or power loss before it is saved can leave changes with no complete recovery record.
+- Restore takes target names, device instance IDs, and PIDs from that saved state. It cannot reliably reconstruct actions missing from the file.
+- Individual re-enable/resume failures are logged as `WARN`, but Restore can still print `Restore completed`. Inspect `actions.jsonl` and verify the actual adapter, device, and process states before considering recovery successful.
+- A Restore does not mark a Panic `state.json` as consumed. Automatic selection can choose a previously restored run; use `-RunId` explicitly when recovering a particular run.
+- If `pssuspend.exe` is missing, frozen processes cannot be resumed by this script; retain a trusted copy if opting into `UserSafe`. Do not distribute Microsoft's binary without checking its license.
+
+**Local, non-destructive rehearsal** (on Windows; checks script/report plumbing, **not** a real recovery):
+
+```powershell
+.\CurtainDrop.ps1 -Mode Panic -FreezeMode Off -DryRun
+$run = Get-ChildItem .\runs -Directory | Sort-Object Name -Descending | Select-Object -First 1
+if (-not $run -or -not (Test-Path (Join-Path $run.FullName 'state.json'))) { throw 'Dry-run state missing' }
+.\CurtainDrop.ps1 -Mode Restore -RunId $run.Name -DryRun
+```
+
+For an actual recovery from a known run (Windows, Administrator, local console):
+
+```powershell
+.\CurtainDrop.ps1 -Mode Restore -RunId 'YYYYMMDD_HHMMSS'
+```
+
+If automatic recovery is incomplete, use `state.json` and the action log to identify only the resources actually changed. A local administrator can inspect adapters with `Get-NetAdapter`, and re-enable a confirmed disabled adapter with `Enable-NetAdapter -Name 'ADAPTER_NAME' -Confirm:$false`; similarly, `Enable-PnpDevice -InstanceId 'INSTANCE_ID' -Confirm:$false` is available for known devices. Do not guess resource IDs or assume a `Restore completed` message guarantees success. Windows restart may be needed to recover some suspended processes.
+
 ---
 
 ## Quick start (recommended workflow)
 
-Open **PowerShell as Administrator** in the project directory:
+Open **PowerShell as Administrator** in the project directory. **Do not run real Panic over RDP, SSH, or another network-dependent connection**: it can disable the very adapter carrying that connection. Use a physical/local Windows console, ensure you can log back in, and read the recovery caveats below before any real run.
+
+A `-DryRun` does not disable adapters/devices or suspend processes, but it **does create local run logs, a state file, and a report**, and may query recent Windows event logs.
 
 ```powershell
 cd CurtainDrop
@@ -68,7 +92,7 @@ cd CurtainDrop
 .\CurtainDrop.ps1 -Mode Panic -FreezeMode UserSafe -DryRun
 ```
 
-### 2) Real test without freezing processes (low risk)
+### 2) Real test without freezing processes (disruptive; local console only)
 ```powershell
 .\CurtainDrop.ps1 -Mode Panic -FreezeMode Off
 .\CurtainDrop.ps1 -Mode Restore
@@ -177,14 +201,13 @@ If you want zero risk of UI impact, run Panic with `-FreezeMode Off`.
   - `./pssuspend.exe` *(root)* or
   - `./tools/pssuspend.exe`
 
-Your current layout:
+Example *local* layout when optionally using PsSuspend (not distributed in this repo):
 
 ```
-\CurtainDrop
-|   CurtainDrop.ps1
-|   pssuspend.exe
-|
-\---runs
+CurtainDrop/
+  CurtainDrop.ps1
+  pssuspend.exe    # optional external tool
+  runs/            # generated locally; may contain sensitive operational evidence
 ```
 
 ---
